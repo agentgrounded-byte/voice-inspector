@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
@@ -38,17 +39,19 @@ export default async function AssetsPage() {
         ) : (
           <ul className="flex flex-col gap-3">
             {(assets as Asset[]).map((asset) => (
-              <li
-                key={asset.id}
-                className="rounded-lg border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900"
-              >
-                <p className="font-medium text-black dark:text-zinc-50">
-                  {asset.name}
-                </p>
-                <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                  {asset.asset_type}
-                  {asset.location ? ` — ${asset.location}` : ""}
-                </p>
+              <li key={asset.id}>
+                <Link
+                  href={`/assets/${asset.id}`}
+                  className="flex flex-col gap-1 rounded-lg border border-zinc-200 bg-white px-4 py-3 transition-colors hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
+                >
+                  <p className="font-medium text-black dark:text-zinc-50">
+                    {asset.name}
+                  </p>
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                    {asset.asset_type}
+                    {asset.location ? ` — ${asset.location}` : ""}
+                  </p>
+                </Link>
               </li>
             ))}
           </ul>

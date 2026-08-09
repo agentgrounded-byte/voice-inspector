@@ -29,13 +29,18 @@ type Template = {
 export default function NewJobForm({
   assets,
   templates,
+  initialAssetId = "",
 }: {
   assets: Asset[];
   templates: Template[];
+  initialAssetId?: string;
 }) {
   const router = useRouter();
-  const [assetId, setAssetId] = useState("");
-  const [title, setTitle] = useState("");
+  const preselectedAsset = assets.find((a) => a.id === initialAssetId) ?? null;
+  const [assetId, setAssetId] = useState(initialAssetId);
+  const [title, setTitle] = useState(
+    preselectedAsset ? `Routine ${preselectedAsset.name} Inspection` : ""
+  );
   const [titleTouched, setTitleTouched] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);

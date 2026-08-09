@@ -5,7 +5,13 @@ import NewJobForm from "./NewJobForm";
 
 export const dynamic = "force-dynamic";
 
-export default async function NewJobPage() {
+export default async function NewJobPage({
+  searchParams,
+}: PageProps<"/jobs/new">) {
+  const resolvedParams = await searchParams;
+  const initialAssetId =
+    typeof resolvedParams.asset === "string" ? resolvedParams.asset : "";
+
   const [{ data: assets }, { data: templates }] = await Promise.all([
     supabase
       .from("assets")
@@ -38,7 +44,11 @@ export default async function NewJobPage() {
           </p>
         </header>
 
-        <NewJobForm assets={assets ?? []} templates={templates ?? []} />
+        <NewJobForm
+          assets={assets ?? []}
+          templates={templates ?? []}
+          initialAssetId={initialAssetId}
+        />
       </main>
     </div>
   );
