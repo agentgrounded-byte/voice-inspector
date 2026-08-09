@@ -17,13 +17,16 @@ export type ChecklistItemForForm = {
 
 export default function ChecklistForm({
   items: initialItems,
+  locked = false,
 }: {
   items: ChecklistItemForForm[];
+  locked?: boolean;
 }) {
   const [items, setItems] = useState(initialItems);
   const [savingId, setSavingId] = useState<string | null>(null);
 
   async function saveValue(itemId: string, value: string) {
+    if (locked) return;
     setSavingId(itemId);
     const trimmed = value.trim();
     const nextStatus = trimmed === "" ? "pending" : "completed";
@@ -83,7 +86,13 @@ export default function ChecklistForm({
             </span>
           </div>
 
-          {item.field_type === "photo" ? (
+          {locked ? (
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">
+              {item.field_type === "photo"
+                ? "See photos below"
+                : item.value_recorded ?? "Not recorded"}
+            </p>
+          ) : item.field_type === "photo" ? (
             <p className="text-sm text-zinc-500 dark:text-zinc-400">
               Photo capture coming in a later step.
             </p>

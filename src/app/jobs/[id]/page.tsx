@@ -146,12 +146,19 @@ export default async function JobDetailPage({
               : ""}
           </h2>
 
+          {typedJob.status === "completed" && (
+            <p className="text-xs text-zinc-400 dark:text-zinc-500">
+              This job is completed — checklist is locked.
+            </p>
+          )}
+
           {sortedItems.length === 0 ? (
             <p className="text-sm text-zinc-500 dark:text-zinc-400">
               No checklist items for this job yet.
             </p>
           ) : (
             <ChecklistForm
+              locked={typedJob.status === "completed"}
               items={sortedItems.map(
                 (item): ChecklistItemForForm => ({
                   id: item.id,
