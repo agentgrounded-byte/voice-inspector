@@ -14,29 +14,96 @@ type JobRow = {
   assets: { name: string; location: string | null; asset_type: string } | null;
 };
 
-const tools = [
-  {
-    type: "function" as const,
-    function: {
-      name: "start_job",
-      description:
-        "Start a specific pending inspection job for the technician. Only call this when the technician clearly says they're beginning work on a specific job or asset (e.g. 'I'm inspecting Pump A-1', 'starting the booster pump check'). Only choose from the list of pending jobs provided. If it's ambiguous which job they mean, don't call this — ask a clarifying question in your reply instead.",
-      parameters: {
-        type: "object",
-        properties: {
-          job_id: {
-            type: "string",
-            description: "The id of the pending job to start, from the provided list.",
-          },
+type ChecklistItemRow = {
+  id: string;
+  field_label: string;
+  field_type: string;
+  is_mandatory: boolean | null;
+  value_recorded: string | null;
+  checklist_template_fields: { options: string[] | null } | null;
+};
+
+const startJobTool = {
+  type: "function" as const,
+  function: {
+    name: "start_job",
+    description:
+      "Start a specific pending inspection job for the technician, or switch to a different job than the one currently active. Only call this when the technician clearly says they're beginning work on a specific job or asset. Only choose from the list of pending jobs provided. If it's ambiguous which job they mean, don't call this — ask a clarifying question in your reply instead.",
+    parameters: {
+      type: "object",
+      properties: {
+        job_id: {
+          type: "string",
+          description: "The id of the pending job to start, from the provided list.",
         },
-        required: ["job_id"],
       },
+      required: ["job_id"],
     },
   },
-];
+};
+
+const updateChecklistTool = {
+  type: "function" as const,
+  function: {
+    name: "update_checklist_items",
+    description:
+      "Record one or more checklist field values for the job currently being worked on, based on what the technician just said.",
+    parameters: {
+      type: "object",
+      properties: {
+        updates: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              item_id: { type: "string", description: "The checklist item id being updated." },
+              value: { type: "string", description: "The value to record for this field." },
+            },
+            required: ["item_id", "value"],
+          },
+        },
+      },
+      required: ["updates"],
+    },
+  },
+};
+
+const completeJobTool = {
+  type: "function" as const,
+  function: {
+    name: "complete_job",
+    description:
+      "Mark the job currently being worked on as completed. Only call this when the technician clearly says they're done, finished, or ready to submit.",
+    parameters: { type: "object", properties: {} },
+  },
+};
+
+async function fetchChecklistSummary(jobId: string) {
+  const { data: items } = await supabase
+    .from("checklist_items")
+    .select(
+      "id, field_label, field_type, is_mandatory, value_recorded, checklist_template_fields(options)"
+    )
+    .eq("job_card_id", jobId);
+
+  const typedItems = (items as unknown as ChecklistItemRow[]) ?? [];
+
+  const summary =
+    typedItems
+      .map((item) => {
+        const options = item.checklist_template_fields?.options ?? [];
+        const optionsPart = options.length ? ` — options: [${options.join(", ")}]` : "";
+        return `- id: ${item.id} — ${item.field_label} (${item.field_type}${
+          item.is_mandatory ? ", mandatory" : ""
+        })${optionsPart} — current value: ${item.value_recorded ?? "not recorded"}`;
+      })
+      .join("\n") || "No checklist items.";
+
+  return { typedItems, summary };
+}
 
 export async function POST(req: Request) {
-  let body: { transcript?: string };
+  let body: { transcript?: string; jobId?: string };
   try {
     body = await req.json();
   } catch {
@@ -61,6 +128,7 @@ export async function POST(req: Request) {
     .order("start_time", { ascending: true, nullsFirst: true });
 
   const allJobs = (jobs as unknown as JobRow[]) ?? [];
+  const pendingJobs = allJobs.filter((j) => j.status === "pending");
 
   const jobsSummary =
     allJobs
@@ -77,7 +145,6 @@ export async function POST(req: Request) {
       })
       .join("\n") || "No jobs found.";
 
-  const pendingJobs = allJobs.filter((j) => j.status === "pending");
   const pendingSummary =
     pendingJobs
       .map((job) => {
@@ -88,13 +155,22 @@ export async function POST(req: Request) {
       })
       .join("\n") || "No pending jobs.";
 
+  // Resolve the active job, if the client says one is in progress.
+  const activeJob = body.jobId ? allJobs.find((j) => j.id === body.jobId) ?? null : null;
+
+  let checklistSummary = "";
+  if (activeJob) {
+    const { summary } = await fetchChecklistSummary(activeJob.id);
+    checklistSummary = summary;
+  }
+
   const today = new Date().toLocaleDateString("en-US", {
     year: "numeric",
     month: "long",
     day: "numeric",
   });
 
-  const systemPrompt = `You are a voice assistant inside "Voice Inspector," an app a water utility field technician uses on their phone. Today's date is ${today}.
+  let systemPrompt = `You are a voice assistant inside "Voice Inspector," an app a water utility field technician uses on their phone. Today's date is ${today}.
 
 Here is the technician's current job list, live from the database:
 ${jobsSummary}
@@ -102,9 +178,34 @@ ${jobsSummary}
 Here are the PENDING jobs eligible to be started (use these ids with the start_job tool):
 ${pendingSummary}
 
-If the technician is asking a question, answer conversationally in 1-3 short sentences based only on this data — if the question needs information this data doesn't include, say so honestly instead of guessing.
+If the technician is asking a general question, answer conversationally in 1-3 short sentences based only on this data — if the question needs information this data doesn't include, say so honestly instead of guessing.`;
 
-If the technician is clearly announcing they're starting work on one specific pending job (e.g. naming the asset or job), call the start_job tool with that job's id instead of just replying. If more than one pending job could match, don't call the tool — ask them to clarify which one instead.`;
+  const tools = [startJobTool];
+
+  if (activeJob) {
+    systemPrompt += `
+
+The technician is currently working on this job:
+Job: ${activeJob.title} (id: ${activeJob.id})
+Asset: ${activeJob.assets?.name ?? "unknown"} (${activeJob.assets?.asset_type ?? "unknown"})
+
+Its checklist:
+${checklistSummary}
+
+Rules for this job's checklist:
+- If the technician describes findings ("pressure is 45", "everything looks fine", "safety guard is secured"), call update_checklist_items with the matching item id(s) and value(s) for each field they addressed.
+  - For radio/dropdown fields, use one of the field's exact listed options.
+  - For checkbox fields, use "Yes" or "No".
+  - For number fields, use just the numeric value they stated.
+  - For text fields, use their described remarks.
+  - Never fabricate a specific number or remark the technician didn't state. A vague "everything's fine" only applies to condition-style radio fields (pick the normal/best option) and confirmation checkboxes — leave numeric and text fields for them to state explicitly.
+  - Never fill "photo" type fields — those need an actual photo attached by tapping "Report defect" on the checklist, not voice. If they describe a problem/defect, acknowledge it in your reply and remind them to use "Report defect" on that item to attach a photo.
+- After applying updates, if any mandatory field on this checklist still has no value, ask the technician for it by name in your reply instead of just confirming.
+- Only call complete_job when the technician clearly says they're done, finished, or ready to submit. If mandatory fields are still missing at that point, don't call it — tell them what's still needed instead.
+- If the technician starts describing a different job/asset entirely, call start_job for that one instead.`;
+
+    tools.push(updateChecklistTool, completeJobTool);
+  }
 
   const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -133,43 +234,99 @@ If the technician is clearly announcing they're starting work on one specific pe
 
   const data = await openaiRes.json();
   const message = data.choices?.[0]?.message;
-  const toolCall = message?.tool_calls?.[0];
+  const toolCalls: any[] = message?.tool_calls ?? [];
 
-  if (toolCall?.function?.name === "start_job") {
-    let jobId: string | undefined;
+  let replyPrefix = "";
+  let resultAction: string | null = null;
+  let resultJobId: string | null = null;
+  let resultJobTitle: string | null = null;
+
+  for (const call of toolCalls) {
+    const name = call.function?.name;
+    let args: any = {};
     try {
-      jobId = JSON.parse(toolCall.function.arguments)?.job_id;
+      args = JSON.parse(call.function?.arguments ?? "{}");
     } catch {
-      // fall through to generic error below
+      continue;
     }
 
-    const matchedJob = pendingJobs.find((j) => j.id === jobId);
-    if (!matchedJob) {
-      return NextResponse.json({
-        answer: "I couldn't find that job to start. Could you say which one again?",
-      });
+    if (name === "start_job") {
+      const matchedJob = pendingJobs.find((j) => j.id === args.job_id);
+      if (!matchedJob) {
+        replyPrefix += "I couldn't find that job to start. ";
+        continue;
+      }
+      const { error: updateError } = await supabase
+        .from("job_cards")
+        .update({ status: "in_progress", start_time: new Date().toISOString() })
+        .eq("id", matchedJob.id);
+
+      if (updateError) {
+        replyPrefix += "I found the job but couldn't start it. ";
+        continue;
+      }
+      replyPrefix += `Started ${matchedJob.title}. `;
+      resultAction = "start_job";
+      resultJobId = matchedJob.id;
+      resultJobTitle = matchedJob.title;
     }
 
-    const { error: updateError } = await supabase
-      .from("job_cards")
-      .update({ status: "in_progress", start_time: new Date().toISOString() })
-      .eq("id", matchedJob.id);
+    if (name === "update_checklist_items" && activeJob) {
+      const { typedItems } = await fetchChecklistSummary(activeJob.id);
+      const validIds = new Set(typedItems.map((i) => i.id));
+      const updates: { item_id: string; value: string }[] = Array.isArray(args.updates)
+        ? args.updates
+        : [];
 
-    if (updateError) {
-      return NextResponse.json({
-        answer: "I found the job but couldn't start it. Try again in a moment.",
-      });
+      for (const u of updates) {
+        if (!validIds.has(u.item_id)) continue;
+        const trimmed = (u.value ?? "").trim();
+        await supabase
+          .from("checklist_items")
+          .update({
+            value_recorded: trimmed === "" ? null : trimmed,
+            status: trimmed === "" ? "pending" : "completed",
+          })
+          .eq("id", u.item_id);
+      }
+      replyPrefix += `Recorded ${updates.length} item${updates.length === 1 ? "" : "s"}. `;
     }
 
-    return NextResponse.json({
-      answer: `Started ${matchedJob.title}. Good luck out there.`,
-      action: "start_job",
-      jobId: matchedJob.id,
-    });
+    if (name === "complete_job" && activeJob) {
+      const { data: missing } = await supabase
+        .from("checklist_items")
+        .select("field_label")
+        .eq("job_card_id", activeJob.id)
+        .eq("is_mandatory", true)
+        .is("value_recorded", null);
+
+      if (missing && missing.length > 0) {
+        replyPrefix += `I still need: ${missing.map((m) => m.field_label).join(", ")}. `;
+      } else {
+        const { error: completeError } = await supabase
+          .from("job_cards")
+          .update({ status: "completed", end_time: new Date().toISOString() })
+          .eq("id", activeJob.id);
+
+        if (!completeError) {
+          replyPrefix += `${activeJob.title} is complete. Nice work. `;
+          resultAction = "complete_job";
+          resultJobId = activeJob.id;
+          resultJobTitle = activeJob.title;
+        } else {
+          replyPrefix += "I couldn't complete the job. Try again. ";
+        }
+      }
+    }
   }
 
-  const answer: string =
-    message?.content?.trim() ?? "Sorry, I couldn't come up with an answer.";
+  const modelText: string = message?.content?.trim() ?? "";
+  const answer = (replyPrefix + modelText).trim() || "Got it.";
 
-  return NextResponse.json({ answer });
+  return NextResponse.json({
+    answer,
+    action: resultAction,
+    jobId: resultJobId,
+    jobTitle: resultJobTitle,
+  });
 }

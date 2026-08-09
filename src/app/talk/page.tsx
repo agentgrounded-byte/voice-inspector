@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Mic, MicOff, Loader2 } from "lucide-react";
+import { Mic, MicOff, Loader2, Briefcase, X } from "lucide-react";
+import { supabase } from "@/lib/supabase";
 
 // The Web Speech API isn't in TypeScript's default DOM lib, so we access it
 // via `window` with loose typing rather than pulling in extra type packages.
@@ -17,6 +19,8 @@ type SpeechRecognitionLike = {
   onend: (() => void) | null;
 };
 
+type ActiveJob = { id: string; title: string };
+
 export default function TalkPage() {
   const router = useRouter();
   const [listening, setListening] = useState(false);
@@ -26,9 +30,29 @@ export default function TalkPage() {
   const [asking, setAsking] = useState(false);
   const [answer, setAnswer] = useState("");
   const [askError, setAskError] = useState<string | null>(null);
+  const [activeJob, setActiveJob] = useState<ActiveJob | null>(null);
 
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const transcriptRef = useRef("");
+  const activeJobRef = useRef<ActiveJob | null>(null);
+
+  // If the technician already started a job via the click-through flow before
+  // coming here, pick it up automatically so voice can continue where they
+  // left off, rather than forcing them to say it again.
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase
+        .from("job_cards")
+        .select("id, title")
+        .eq("status", "in_progress")
+        .order("start_time", { ascending: false })
+        .limit(1);
+      if (data && data.length === 1) {
+        setActiveJob(data[0]);
+        activeJobRef.current = data[0];
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     const SpeechRecognitionCtor =
@@ -93,15 +117,24 @@ export default function TalkPage() {
       const res = await fetch("/api/voice/query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript: text }),
+        body: JSON.stringify({ transcript: text, jobId: activeJobRef.current?.id ?? null }),
       });
       if (!res.ok) throw new Error("Request failed");
       const data = await res.json();
       const responseText: string = data.answer ?? "";
       setAnswer(responseText);
       speak(responseText);
+
       if (data.action === "start_job" && data.jobId) {
-        setTimeout(() => router.push(`/jobs/${data.jobId}`), 1200);
+        const job = { id: data.jobId, title: data.jobTitle ?? "Job" };
+        setActiveJob(job);
+        activeJobRef.current = job;
+      } else if (data.action === "complete_job") {
+        setActiveJob(null);
+        activeJobRef.current = null;
+        if (data.jobId) {
+          setTimeout(() => router.push(`/jobs/${data.jobId}`), 1500);
+        }
       }
     } catch {
       setAskError("Couldn't get an answer. Try again.");
@@ -133,6 +166,11 @@ export default function TalkPage() {
     }
   }
 
+  function clearActiveJob() {
+    setActiveJob(null);
+    activeJobRef.current = null;
+  }
+
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-zinc-50 px-6 text-center font-sans dark:bg-black">
       {!supported ? (
@@ -141,6 +179,26 @@ export default function TalkPage() {
         </p>
       ) : (
         <>
+          {activeJob && (
+            <div className="flex w-full max-w-sm items-center justify-between gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs dark:border-zinc-800 dark:bg-zinc-900">
+              <Link
+                href={`/jobs/${activeJob.id}`}
+                className="flex min-w-0 items-center gap-1.5 text-zinc-600 hover:underline dark:text-zinc-300"
+              >
+                <Briefcase size={13} className="shrink-0" />
+                <span className="truncate">Working on: {activeJob.title}</span>
+              </Link>
+              <button
+                type="button"
+                onClick={clearActiveJob}
+                aria-label="Clear active job"
+                className="shrink-0 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          )}
+
           <button
             type="button"
             onClick={toggleListening}
@@ -164,7 +222,9 @@ export default function TalkPage() {
               </p>
             ) : (
               <p className="text-zinc-400 dark:text-zinc-500">
-                Ask something like &quot;What are my jobs today?&quot;
+                {activeJob
+                  ? 'Describe what you see, e.g. "pressure is 45, everything else looks fine."'
+                  : 'Ask something like "What are my jobs today?"'}
               </p>
             )}
           </div>
