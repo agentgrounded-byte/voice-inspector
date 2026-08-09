@@ -16,20 +16,15 @@ type JobCardDetail = {
   checklist_templates: { title: string } | null;
 };
 
-type TemplateField = {
-  id: string;
-  field_label: string;
-  field_type: "text" | "number" | "radio" | "dropdown" | "checkbox" | "photo";
-  options: string[] | null;
-  is_mandatory: boolean | null;
-  display_order: number | null;
-};
-
 type ChecklistItem = {
   id: string;
   field_id: string | null;
+  field_label: string;
+  field_type: "text" | "number" | "radio" | "dropdown" | "checkbox" | "photo";
+  is_mandatory: boolean | null;
   status: "pending" | "pass" | "fail" | "completed" | null;
   value_recorded: string | null;
+  checklist_template_fields: { display_order: number | null } | null;
 };
 
 type Defect = {
@@ -68,29 +63,29 @@ export default async function JobDetailPage({
 
   const typedJob = job as unknown as JobCardDetail;
 
-  const [{ data: fields }, { data: items }, { data: defects }] =
-    await Promise.all([
-      typedJob.template_id
-        ? supabase
-            .from("checklist_template_fields")
-            .select("id, field_label, field_type, options, is_mandatory, display_order")
-            .eq("template_id", typedJob.template_id)
-            .order("display_order", { ascending: true })
-        : Promise.resolve({ data: [] as TemplateField[] }),
-      supabase
-        .from("checklist_items")
-        .select("id, field_id, status, value_recorded")
-        .eq("job_card_id", typedJob.id),
-      supabase
-        .from("defects")
-        .select("id, checklist_item_id, description, photo_url")
-        .eq("job_card_id", typedJob.id),
-    ]);
+  // checklist_items is the source of truth for a job's checklist: one row per
+  // (job_card_id, field_id), instantiated from checklist_template_fields when
+  // the job was created. We only join back to the template field for display_order.
+  const [{ data: items }, { data: defects }] = await Promise.all([
+    supabase
+      .from("checklist_items")
+      .select(
+        "id, field_id, field_label, field_type, is_mandatory, status, value_recorded, checklist_template_fields(display_order)"
+      )
+      .eq("job_card_id", typedJob.id),
+    supabase
+      .from("defects")
+      .select("id, checklist_item_id, description, photo_url")
+      .eq("job_card_id", typedJob.id),
+  ]);
 
-  const itemsByFieldId = new Map<string, ChecklistItem>();
-  ((items as ChecklistItem[]) ?? []).forEach((item) => {
-    if (item.field_id) itemsByFieldId.set(item.field_id, item);
-  });
+  const sortedItems = ((items as unknown as ChecklistItem[]) ?? [])
+    .slice()
+    .sort(
+      (a, b) =>
+        (a.checklist_template_fields?.display_order ?? 0) -
+        (b.checklist_template_fields?.display_order ?? 0)
+    );
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans dark:bg-black">
@@ -147,42 +142,39 @@ export default async function JobDetailPage({
               : ""}
           </h2>
 
-          {!fields || fields.length === 0 ? (
+          {sortedItems.length === 0 ? (
             <p className="text-sm text-zinc-500 dark:text-zinc-400">
-              No checklist template linked to this job.
+              No checklist items for this job yet.
             </p>
           ) : (
             <ul className="flex flex-col gap-3">
-              {(fields as TemplateField[]).map((field) => {
-                const item = itemsByFieldId.get(field.id);
-                return (
-                  <li
-                    key={field.id}
-                    className="flex flex-col gap-1 rounded-lg border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <p className="text-sm font-medium text-black dark:text-zinc-50">
-                        {field.field_label}
-                        {field.is_mandatory && (
-                          <span className="ml-1 text-red-500">*</span>
-                        )}
-                      </p>
-                      <span
-                        className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium capitalize ${statusBadgeClass(
-                          item?.status ?? "pending"
-                        )}`}
-                      >
-                        {statusLabel(item?.status ?? "pending")}
-                      </span>
-                    </div>
-                    <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                      {field.field_type === "photo"
-                        ? "See photos below"
-                        : item?.value_recorded ?? "Not recorded yet"}
+              {sortedItems.map((item) => (
+                <li
+                  key={item.id}
+                  className="flex flex-col gap-1 rounded-lg border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-sm font-medium text-black dark:text-zinc-50">
+                      {item.field_label}
+                      {item.is_mandatory && (
+                        <span className="ml-1 text-red-500">*</span>
+                      )}
                     </p>
-                  </li>
-                );
-              })}
+                    <span
+                      className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium capitalize ${statusBadgeClass(
+                        item.status
+                      )}`}
+                    >
+                      {statusLabel(item.status)}
+                    </span>
+                  </div>
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                    {item.field_type === "photo"
+                      ? "See photos below"
+                      : item.value_recorded ?? "Not recorded yet"}
+                  </p>
+                </li>
+              ))}
             </ul>
           )}
         </section>
