@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { ChevronLeft, Camera } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { statusBadgeClass, statusLabel } from "@/lib/status";
+import ChecklistForm, { type ChecklistItemForForm } from "./ChecklistForm";
 
 type JobCardDetail = {
   id: string;
@@ -24,7 +25,10 @@ type ChecklistItem = {
   is_mandatory: boolean | null;
   status: "pending" | "pass" | "fail" | "completed" | null;
   value_recorded: string | null;
-  checklist_template_fields: { display_order: number | null } | null;
+  checklist_template_fields: {
+    display_order: number | null;
+    options: string[] | null;
+  } | null;
 };
 
 type Defect = {
@@ -70,7 +74,7 @@ export default async function JobDetailPage({
     supabase
       .from("checklist_items")
       .select(
-        "id, field_id, field_label, field_type, is_mandatory, status, value_recorded, checklist_template_fields(display_order)"
+        "id, field_id, field_label, field_type, is_mandatory, status, value_recorded, checklist_template_fields(display_order, options)"
       )
       .eq("job_card_id", typedJob.id),
     supabase
@@ -147,35 +151,19 @@ export default async function JobDetailPage({
               No checklist items for this job yet.
             </p>
           ) : (
-            <ul className="flex flex-col gap-3">
-              {sortedItems.map((item) => (
-                <li
-                  key={item.id}
-                  className="flex flex-col gap-1 rounded-lg border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <p className="text-sm font-medium text-black dark:text-zinc-50">
-                      {item.field_label}
-                      {item.is_mandatory && (
-                        <span className="ml-1 text-red-500">*</span>
-                      )}
-                    </p>
-                    <span
-                      className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium capitalize ${statusBadgeClass(
-                        item.status
-                      )}`}
-                    >
-                      {statusLabel(item.status)}
-                    </span>
-                  </div>
-                  <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                    {item.field_type === "photo"
-                      ? "See photos below"
-                      : item.value_recorded ?? "Not recorded yet"}
-                  </p>
-                </li>
-              ))}
-            </ul>
+            <ChecklistForm
+              items={sortedItems.map(
+                (item): ChecklistItemForForm => ({
+                  id: item.id,
+                  field_label: item.field_label,
+                  field_type: item.field_type,
+                  is_mandatory: item.is_mandatory,
+                  status: item.status,
+                  value_recorded: item.value_recorded,
+                  options: item.checklist_template_fields?.options ?? [],
+                })
+              )}
+            />
           )}
         </section>
 
