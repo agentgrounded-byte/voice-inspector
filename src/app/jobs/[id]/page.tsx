@@ -5,6 +5,7 @@ import { supabase } from "@/lib/supabase";
 import { statusBadgeClass, statusLabel } from "@/lib/status";
 import ChecklistForm, { type ChecklistItemForForm } from "./ChecklistForm";
 import JobActions from "./JobActions";
+import JobMic from "./JobMic";
 
 export const dynamic = "force-dynamic";
 
@@ -151,10 +152,12 @@ export default async function JobDetailPage({
               : ""}
           </h2>
 
-          {typedJob.status === "completed" && (
+          {typedJob.status === "completed" ? (
             <p className="text-xs text-zinc-400 dark:text-zinc-500">
               This job is completed — checklist is locked.
             </p>
+          ) : (
+            <JobMic jobId={typedJob.id} />
           )}
 
           {sortedItems.length === 0 ? (

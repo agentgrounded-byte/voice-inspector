@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, Loader2, AlertTriangle, Camera } from "lucide-react";
 import { supabase } from "@/lib/supabase";
@@ -28,6 +28,15 @@ export default function ChecklistForm({
   const router = useRouter();
   const [items, setItems] = useState(initialItems);
   const [savingId, setSavingId] = useState<string | null>(null);
+
+  // JobMic triggers router.refresh() after a voice update, which re-fetches
+  // fresh checklist_items on the server and passes new `items` props here.
+  // Without this, our local state (seeded once on mount) would never pick up
+  // changes made outside this form, like a voice-driven update.
+  useEffect(() => {
+    setItems(initialItems);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialItems]);
 
   const [defectOpenId, setDefectOpenId] = useState<string | null>(null);
   const [defectDescription, setDefectDescription] = useState("");

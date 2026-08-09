@@ -173,19 +173,14 @@ export async function POST(req: Request) {
   let systemPrompt = `You are a voice assistant inside "Voice Inspector," an app a water utility field technician uses on their phone. Today's date is ${today}.
 
 Here is the technician's current job list, live from the database:
-${jobsSummary}
+${jobsSummary}`;
 
-Here are the PENDING jobs eligible to be started (use these ids with the start_job tool):
-${pendingSummary}
-
-If the technician is asking a general question, answer conversationally in 1-3 short sentences based only on this data — if the question needs information this data doesn't include, say so honestly instead of guessing.`;
-
-  const tools = [startJobTool];
+  const tools: (typeof startJobTool | typeof updateChecklistTool | typeof completeJobTool)[] = [];
 
   if (activeJob) {
     systemPrompt += `
 
-The technician is currently working on this job:
+The technician is on this job's page right now, so this is unambiguously the job they mean:
 Job: ${activeJob.title} (id: ${activeJob.id})
 Asset: ${activeJob.assets?.name ?? "unknown"} (${activeJob.assets?.asset_type ?? "unknown"})
 
@@ -202,9 +197,18 @@ Rules for this job's checklist:
   - Never fill "photo" type fields — those need an actual photo attached by tapping "Report defect" on the checklist, not voice. If they describe a problem/defect, acknowledge it in your reply and remind them to use "Report defect" on that item to attach a photo.
 - After applying updates, if any mandatory field on this checklist still has no value, ask the technician for it by name in your reply instead of just confirming.
 - Only call complete_job when the technician clearly says they're done, finished, or ready to submit. If mandatory fields are still missing at that point, don't call it — tell them what's still needed instead.
-- If the technician starts describing a different job/asset entirely, call start_job for that one instead.`;
+- If the technician is just asking a general question instead, answer conversationally in 1-3 short sentences based on the data provided.`;
 
     tools.push(updateChecklistTool, completeJobTool);
+  } else {
+    systemPrompt += `
+
+Here are the PENDING jobs eligible to be started (use these ids with the start_job tool):
+${pendingSummary}
+
+If the technician is asking a general question, answer conversationally in 1-3 short sentences based only on this data — if the question needs information this data doesn't include, say so honestly instead of guessing.`;
+
+    tools.push(startJobTool);
   }
 
   const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -290,6 +294,16 @@ Rules for this job's checklist:
           .eq("id", u.item_id);
       }
       replyPrefix += `Recorded ${updates.length} item${updates.length === 1 ? "" : "s"}. `;
+
+      // Describing findings out loud is, in effect, starting the job — so a
+      // pending job auto-transitions to in_progress the first time voice
+      // records something against it, same as tapping "Start Job" would.
+      if (updates.length > 0 && activeJob.status === "pending") {
+        await supabase
+          .from("job_cards")
+          .update({ status: "in_progress", start_time: new Date().toISOString() })
+          .eq("id", activeJob.id);
+      }
     }
 
     if (name === "complete_job" && activeJob) {
