@@ -23,6 +23,8 @@ type ChecklistItemRow = {
   checklist_template_fields: { options: string[] | null } | null;
 };
 
+type HistoryMessage = { role: "user" | "assistant"; content: string };
+
 const startJobTool = {
   type: "function" as const,
   function: {
@@ -78,7 +80,7 @@ const completeJobTool = {
   },
 };
 
-async function fetchChecklistSummary(jobId: string) {
+async function fetchChecklistItems(jobId: string) {
   const { data: items } = await supabase
     .from("checklist_items")
     .select(
@@ -86,9 +88,11 @@ async function fetchChecklistSummary(jobId: string) {
     )
     .eq("job_card_id", jobId);
 
-  const typedItems = (items as unknown as ChecklistItemRow[]) ?? [];
+  return (items as unknown as ChecklistItemRow[]) ?? [];
+}
 
-  const summary =
+function summarizeChecklist(typedItems: ChecklistItemRow[]) {
+  return (
     typedItems
       .map((item) => {
         const options = item.checklist_template_fields?.options ?? [];
@@ -97,13 +101,54 @@ async function fetchChecklistSummary(jobId: string) {
           item.is_mandatory ? ", mandatory" : ""
         })${optionsPart} — current value: ${item.value_recorded ?? "not recorded"}`;
       })
-      .join("\n") || "No checklist items.";
+      .join("\n") || "No checklist items."
+  );
+}
 
-  return { typedItems, summary };
+/**
+ * Coerces a model-provided value into something valid for this field's type,
+ * rather than trusting the model to always follow the prompt's formatting
+ * rules. Returns null if the value can't be confidently mapped (caller
+ * should skip writing it rather than store something bogus).
+ * Returns "" if the technician wants to clear the field.
+ */
+function normalizeChecklistValue(
+  fieldType: string,
+  options: string[],
+  rawValue: string
+): string | null {
+  const value = (rawValue ?? "").trim();
+  if (value === "") return "";
+  if (fieldType === "photo") return null;
+
+  if (fieldType === "checkbox") {
+    const v = value.toLowerCase();
+    if (/^(y|yes|true|confirmed?|secured?|ok|okay|good|done|checked)/.test(v)) return "Yes";
+    if (/^(n|no|false|not|unsecured?|unconfirmed|unchecked)/.test(v)) return "No";
+    return null;
+  }
+
+  if (fieldType === "radio" || fieldType === "dropdown") {
+    const exact = options.find((o) => o.toLowerCase() === value.toLowerCase());
+    if (exact) return exact;
+    const partial = options.find(
+      (o) =>
+        o.toLowerCase().includes(value.toLowerCase()) ||
+        value.toLowerCase().includes(o.toLowerCase())
+    );
+    return partial ?? null;
+  }
+
+  if (fieldType === "number") {
+    const match = value.match(/-?\d+(\.\d+)?/);
+    return match ? match[0] : null;
+  }
+
+  return value; // text, e.g. Inspector Remarks
 }
 
 export async function POST(req: Request) {
-  let body: { transcript?: string; jobId?: string };
+  let body: { transcript?: string; jobId?: string; history?: HistoryMessage[] };
   try {
     body = await req.json();
   } catch {
@@ -121,6 +166,15 @@ export async function POST(req: Request) {
       { status: 500 }
     );
   }
+
+  const history: HistoryMessage[] = Array.isArray(body.history)
+    ? body.history
+        .filter(
+          (m): m is HistoryMessage =>
+            (m?.role === "user" || m?.role === "assistant") && typeof m.content === "string"
+        )
+        .slice(-10)
+    : [];
 
   const { data: jobs } = await supabase
     .from("job_cards")
@@ -158,10 +212,9 @@ export async function POST(req: Request) {
   // Resolve the active job, if the client says one is in progress.
   const activeJob = body.jobId ? allJobs.find((j) => j.id === body.jobId) ?? null : null;
 
-  let checklistSummary = "";
+  let activeItems: ChecklistItemRow[] = [];
   if (activeJob) {
-    const { summary } = await fetchChecklistSummary(activeJob.id);
-    checklistSummary = summary;
+    activeItems = await fetchChecklistItems(activeJob.id);
   }
 
   const today = new Date().toLocaleDateString("en-US", {
@@ -170,7 +223,7 @@ export async function POST(req: Request) {
     day: "numeric",
   });
 
-  let systemPrompt = `You are a voice assistant inside "Voice Inspector," an app a water utility field technician uses on their phone. Today's date is ${today}.
+  let systemPrompt = `You are a voice assistant inside "Voice Inspector," an app a water utility field technician uses on their phone. Today's date is ${today}. You're mid-conversation with the technician — use the prior turns below to resolve short replies like "yes", "no", or a bare number against whatever you just asked about.
 
 Here is the technician's current job list, live from the database:
 ${jobsSummary}`;
@@ -178,6 +231,10 @@ ${jobsSummary}`;
   const tools: (typeof startJobTool | typeof updateChecklistTool | typeof completeJobTool)[] = [];
 
   if (activeJob) {
+    const remarksField = activeItems.find((i) =>
+      i.field_label.toLowerCase().includes("remark")
+    );
+
     systemPrompt += `
 
 The technician is on this job's page right now, so this is unambiguously the job they mean:
@@ -185,16 +242,20 @@ Job: ${activeJob.title} (id: ${activeJob.id})
 Asset: ${activeJob.assets?.name ?? "unknown"} (${activeJob.assets?.asset_type ?? "unknown"})
 
 Its checklist:
-${checklistSummary}
+${summarizeChecklist(activeItems)}
 
 Rules for this job's checklist:
 - If the technician describes findings ("pressure is 45", "everything looks fine", "safety guard is secured"), call update_checklist_items with the matching item id(s) and value(s) for each field they addressed.
-  - For radio/dropdown fields, use one of the field's exact listed options.
-  - For checkbox fields, use "Yes" or "No".
-  - For number fields, use just the numeric value they stated.
-  - For text fields, use their described remarks.
-  - Never fabricate a specific number or remark the technician didn't state. A vague "everything's fine" only applies to condition-style radio fields (pick the normal/best option) and confirmation checkboxes — leave numeric and text fields for them to state explicitly.
-  - Never fill "photo" type fields — those need an actual photo attached by tapping "Report defect" on the checklist, not voice. If they describe a problem/defect, acknowledge it in your reply and remind them to use "Report defect" on that item to attach a photo.
+  - For radio/dropdown fields, the value MUST be one of that field's exact listed options, character for character. Never reuse a value that belongs to a different field.
+  - For checkbox fields, the value MUST be exactly "Yes" or "No" — nothing else. Never put a condition word like "Operational" in a checkbox field.
+  - For number fields, use just the numeric value they stated, no units.
+  - Never fabricate a specific number the technician didn't state. A vague "everything's fine" only applies to condition-style radio fields (pick the normal/best option) and confirmation checkboxes ("Yes") — leave numeric fields for them to state explicitly.
+  - Never fill "photo" type fields — those need an actual photo attached by tapping "Report defect" on the checklist, not voice. If they describe a problem/defect, acknowledge it in your reply and remind them to use "Report defect" on that item to attach a photo.${
+    remarksField
+      ? `
+  - Anything the technician says that doesn't cleanly map to one of the structured fields above — general observations, context, things they mention in passing — should be recorded in the "${remarksField.field_label}" field (id: ${remarksField.id}) instead of being dropped. You can append to it across turns.`
+      : ""
+  }
 - After applying updates, if any mandatory field on this checklist still has no value, ask the technician for it by name in your reply instead of just confirming.
 - Only call complete_job when the technician clearly says they're done, finished, or ready to submit. If mandatory fields are still missing at that point, don't call it — tell them what's still needed instead.
 - If the technician is just asking a general question instead, answer conversationally in 1-3 short sentences based on the data provided.`;
@@ -221,6 +282,7 @@ If the technician is asking a general question, answer conversationally in 1-3 s
       model: "gpt-4o-mini",
       messages: [
         { role: "system", content: systemPrompt },
+        ...history,
         { role: "user", content: transcript },
       ],
       tools,
@@ -276,29 +338,47 @@ If the technician is asking a general question, answer conversationally in 1-3 s
     }
 
     if (name === "update_checklist_items" && activeJob) {
-      const { typedItems } = await fetchChecklistSummary(activeJob.id);
-      const validIds = new Set(typedItems.map((i) => i.id));
+      const itemById = new Map(activeItems.map((i) => [i.id, i]));
       const updates: { item_id: string; value: string }[] = Array.isArray(args.updates)
         ? args.updates
         : [];
 
+      let appliedCount = 0;
+      const skippedLabels: string[] = [];
+
       for (const u of updates) {
-        if (!validIds.has(u.item_id)) continue;
-        const trimmed = (u.value ?? "").trim();
+        const item = itemById.get(u.item_id);
+        if (!item) continue;
+
+        const options = item.checklist_template_fields?.options ?? [];
+        const normalized = normalizeChecklistValue(item.field_type, options, u.value ?? "");
+
+        if (normalized === null) {
+          skippedLabels.push(item.field_label);
+          continue;
+        }
+
         await supabase
           .from("checklist_items")
           .update({
-            value_recorded: trimmed === "" ? null : trimmed,
-            status: trimmed === "" ? "pending" : "completed",
+            value_recorded: normalized === "" ? null : normalized,
+            status: normalized === "" ? "pending" : "completed",
           })
           .eq("id", u.item_id);
+        appliedCount++;
       }
-      replyPrefix += `Recorded ${updates.length} item${updates.length === 1 ? "" : "s"}. `;
+
+      if (appliedCount > 0) {
+        replyPrefix += `Recorded ${appliedCount} item${appliedCount === 1 ? "" : "s"}. `;
+      }
+      if (skippedLabels.length > 0) {
+        replyPrefix += `Couldn't confidently record: ${skippedLabels.join(", ")} — can you rephrase those? `;
+      }
 
       // Describing findings out loud is, in effect, starting the job — so a
       // pending job auto-transitions to in_progress the first time voice
       // records something against it, same as tapping "Start Job" would.
-      if (updates.length > 0 && activeJob.status === "pending") {
+      if (appliedCount > 0 && activeJob.status === "pending") {
         await supabase
           .from("job_cards")
           .update({ status: "in_progress", start_time: new Date().toISOString() })

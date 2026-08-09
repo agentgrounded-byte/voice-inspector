@@ -6,11 +6,14 @@ import { Mic, MicOff, Loader2 } from "lucide-react";
 import { useSpeechRecognition } from "@/lib/useSpeechRecognition";
 import { speak } from "@/lib/speak";
 
+type HistoryMessage = { role: "user" | "assistant"; content: string };
+
 export default function JobMic({ jobId }: { jobId: string }) {
   const router = useRouter();
   const [asking, setAsking] = useState(false);
   const [answer, setAnswer] = useState("");
   const [askError, setAskError] = useState<string | null>(null);
+  const [history, setHistory] = useState<HistoryMessage[]>([]);
 
   const { listening, transcript, interim, supported, toggleListening } =
     useSpeechRecognition(askQuestion);
@@ -23,13 +26,18 @@ export default function JobMic({ jobId }: { jobId: string }) {
       const res = await fetch("/api/voice/query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript: text, jobId }),
+        body: JSON.stringify({ transcript: text, jobId, history }),
       });
       if (!res.ok) throw new Error("Request failed");
       const data = await res.json();
       const responseText: string = data.answer ?? "";
       setAnswer(responseText);
       speak(responseText);
+      setHistory((prev) =>
+        [...prev, { role: "user", content: text }, { role: "assistant", content: responseText }].slice(
+          -10
+        )
+      );
       router.refresh();
     } catch {
       setAskError("Couldn't get an answer. Try again.");
