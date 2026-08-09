@@ -6,12 +6,34 @@ import { supabase } from "@/lib/supabase";
 // browser.
 
 type JobRow = {
+  id: string;
   title: string;
   status: string | null;
   start_time: string | null;
   end_time: string | null;
   assets: { name: string; location: string | null; asset_type: string } | null;
 };
+
+const tools = [
+  {
+    type: "function" as const,
+    function: {
+      name: "start_job",
+      description:
+        "Start a specific pending inspection job for the technician. Only call this when the technician clearly says they're beginning work on a specific job or asset (e.g. 'I'm inspecting Pump A-1', 'starting the booster pump check'). Only choose from the list of pending jobs provided. If it's ambiguous which job they mean, don't call this — ask a clarifying question in your reply instead.",
+      parameters: {
+        type: "object",
+        properties: {
+          job_id: {
+            type: "string",
+            description: "The id of the pending job to start, from the provided list.",
+          },
+        },
+        required: ["job_id"],
+      },
+    },
+  },
+];
 
 export async function POST(req: Request) {
   let body: { transcript?: string };
@@ -35,11 +57,13 @@ export async function POST(req: Request) {
 
   const { data: jobs } = await supabase
     .from("job_cards")
-    .select("title, status, start_time, end_time, assets(name, location, asset_type)")
+    .select("id, title, status, start_time, end_time, assets(name, location, asset_type)")
     .order("start_time", { ascending: true, nullsFirst: true });
 
+  const allJobs = (jobs as unknown as JobRow[]) ?? [];
+
   const jobsSummary =
-    ((jobs as unknown as JobRow[]) ?? [])
+    allJobs
       .map((job) => {
         const asset = job.assets;
         const assetPart = asset
@@ -53,6 +77,17 @@ export async function POST(req: Request) {
       })
       .join("\n") || "No jobs found.";
 
+  const pendingJobs = allJobs.filter((j) => j.status === "pending");
+  const pendingSummary =
+    pendingJobs
+      .map((job) => {
+        const asset = job.assets;
+        return `- id: ${job.id} — ${job.title}${
+          asset ? ` (asset: ${asset.name}, type: ${asset.asset_type})` : ""
+        }`;
+      })
+      .join("\n") || "No pending jobs.";
+
   const today = new Date().toLocaleDateString("en-US", {
     year: "numeric",
     month: "long",
@@ -64,7 +99,12 @@ export async function POST(req: Request) {
 Here is the technician's current job list, live from the database:
 ${jobsSummary}
 
-Answer the technician's question conversationally in 1-3 short sentences, based only on this data. If the question needs information this data doesn't include, say so honestly instead of guessing.`;
+Here are the PENDING jobs eligible to be started (use these ids with the start_job tool):
+${pendingSummary}
+
+If the technician is asking a question, answer conversationally in 1-3 short sentences based only on this data — if the question needs information this data doesn't include, say so honestly instead of guessing.
+
+If the technician is clearly announcing they're starting work on one specific pending job (e.g. naming the asset or job), call the start_job tool with that job's id instead of just replying. If more than one pending job could match, don't call the tool — ask them to clarify which one instead.`;
 
   const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -78,6 +118,7 @@ Answer the technician's question conversationally in 1-3 short sentences, based 
         { role: "system", content: systemPrompt },
         { role: "user", content: transcript },
       ],
+      tools,
       temperature: 0.3,
     }),
   });
@@ -91,9 +132,44 @@ Answer the technician's question conversationally in 1-3 short sentences, based 
   }
 
   const data = await openaiRes.json();
+  const message = data.choices?.[0]?.message;
+  const toolCall = message?.tool_calls?.[0];
+
+  if (toolCall?.function?.name === "start_job") {
+    let jobId: string | undefined;
+    try {
+      jobId = JSON.parse(toolCall.function.arguments)?.job_id;
+    } catch {
+      // fall through to generic error below
+    }
+
+    const matchedJob = pendingJobs.find((j) => j.id === jobId);
+    if (!matchedJob) {
+      return NextResponse.json({
+        answer: "I couldn't find that job to start. Could you say which one again?",
+      });
+    }
+
+    const { error: updateError } = await supabase
+      .from("job_cards")
+      .update({ status: "in_progress", start_time: new Date().toISOString() })
+      .eq("id", matchedJob.id);
+
+    if (updateError) {
+      return NextResponse.json({
+        answer: "I found the job but couldn't start it. Try again in a moment.",
+      });
+    }
+
+    return NextResponse.json({
+      answer: `Started ${matchedJob.title}. Good luck out there.`,
+      action: "start_job",
+      jobId: matchedJob.id,
+    });
+  }
+
   const answer: string =
-    data.choices?.[0]?.message?.content?.trim() ??
-    "Sorry, I couldn't come up with an answer.";
+    message?.content?.trim() ?? "Sorry, I couldn't come up with an answer.";
 
   return NextResponse.json({ answer });
 }

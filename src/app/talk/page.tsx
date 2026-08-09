@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Mic, MicOff, Loader2 } from "lucide-react";
 
 // The Web Speech API isn't in TypeScript's default DOM lib, so we access it
@@ -17,6 +18,7 @@ type SpeechRecognitionLike = {
 };
 
 export default function TalkPage() {
+  const router = useRouter();
   const [listening, setListening] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [interim, setInterim] = useState("");
@@ -98,6 +100,9 @@ export default function TalkPage() {
       const responseText: string = data.answer ?? "";
       setAnswer(responseText);
       speak(responseText);
+      if (data.action === "start_job" && data.jobId) {
+        setTimeout(() => router.push(`/jobs/${data.jobId}`), 1200);
+      }
     } catch {
       setAskError("Couldn't get an answer. Try again.");
     } finally {
