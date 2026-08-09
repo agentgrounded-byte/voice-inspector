@@ -2,6 +2,10 @@ import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 import { statusBadgeClass, statusLabel } from "@/lib/status";
 
+// This page has no dynamic route segment, so Next.js would otherwise be free
+// to statically cache it. Force fresh data on every request.
+export const dynamic = "force-dynamic";
+
 type JobCard = {
   id: string;
   title: string;

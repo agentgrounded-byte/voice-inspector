@@ -6,6 +6,8 @@ import { statusBadgeClass, statusLabel } from "@/lib/status";
 import ChecklistForm, { type ChecklistItemForForm } from "./ChecklistForm";
 import JobActions from "./JobActions";
 
+export const dynamic = "force-dynamic";
+
 type JobCardDetail = {
   id: string;
   title: string;
