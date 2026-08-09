@@ -1,4 +1,6 @@
+import Link from "next/link";
 import { supabase } from "@/lib/supabase";
+import { statusBadgeClass, statusLabel } from "@/lib/status";
 
 type JobCard = {
   id: string;
@@ -9,20 +11,6 @@ type JobCard = {
   assets: { name: string; location: string | null } | null;
   checklist_templates: { title: string } | null;
 };
-
-const statusStyles: Record<string, string> = {
-  pending:
-    "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
-  in_progress:
-    "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
-  completed:
-    "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
-};
-
-function statusLabel(status: string | null) {
-  if (!status) return "Unknown";
-  return status.replace("_", " ");
-}
 
 export default async function JobsPage() {
   const { data: jobs, error } = await supabase
@@ -55,34 +43,35 @@ export default async function JobsPage() {
         ) : (
           <ul className="flex flex-col gap-3">
             {(jobs as unknown as JobCard[]).map((job) => (
-              <li
-                key={job.id}
-                className="flex flex-col gap-2 rounded-lg border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <p className="font-medium text-black dark:text-zinc-50">
-                    {job.title}
-                  </p>
-                  <span
-                    className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium capitalize ${
-                      statusStyles[job.status ?? ""] ??
-                      "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
-                    }`}
-                  >
-                    {statusLabel(job.status)}
-                  </span>
-                </div>
-                {job.assets && (
-                  <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                    {job.assets.name}
-                    {job.assets.location ? ` — ${job.assets.location}` : ""}
-                  </p>
-                )}
-                {job.checklist_templates && (
-                  <p className="text-xs text-zinc-400 dark:text-zinc-500">
-                    Checklist: {job.checklist_templates.title}
-                  </p>
-                )}
+              <li key={job.id}>
+                <Link
+                  href={`/jobs/${job.id}`}
+                  className="flex flex-col gap-2 rounded-lg border border-zinc-200 bg-white px-4 py-3 transition-colors hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="font-medium text-black dark:text-zinc-50">
+                      {job.title}
+                    </p>
+                    <span
+                      className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium capitalize ${statusBadgeClass(
+                        job.status
+                      )}`}
+                    >
+                      {statusLabel(job.status)}
+                    </span>
+                  </div>
+                  {job.assets && (
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                      {job.assets.name}
+                      {job.assets.location ? ` — ${job.assets.location}` : ""}
+                    </p>
+                  )}
+                  {job.checklist_templates && (
+                    <p className="text-xs text-zinc-400 dark:text-zinc-500">
+                      Checklist: {job.checklist_templates.title}
+                    </p>
+                  )}
+                </Link>
               </li>
             ))}
           </ul>
