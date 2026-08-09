@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Loader2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Check, Loader2, AlertTriangle, Camera } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { statusBadgeClass, statusLabel } from "@/lib/status";
 
@@ -16,14 +17,23 @@ export type ChecklistItemForForm = {
 };
 
 export default function ChecklistForm({
+  jobId,
   items: initialItems,
   locked = false,
 }: {
+  jobId: string;
   items: ChecklistItemForForm[];
   locked?: boolean;
 }) {
+  const router = useRouter();
   const [items, setItems] = useState(initialItems);
   const [savingId, setSavingId] = useState<string | null>(null);
+
+  const [defectOpenId, setDefectOpenId] = useState<string | null>(null);
+  const [defectDescription, setDefectDescription] = useState("");
+  const [defectFile, setDefectFile] = useState<File | null>(null);
+  const [defectSubmitting, setDefectSubmitting] = useState(false);
+  const [defectError, setDefectError] = useState<string | null>(null);
 
   async function saveValue(itemId: string, value: string) {
     if (locked) return;
@@ -52,6 +62,68 @@ export default function ChecklistForm({
     setItems((prev) =>
       prev.map((it) => (it.id === itemId ? { ...it, value_recorded: value } : it))
     );
+  }
+
+  function toggleDefectForm(itemId: string) {
+    if (defectOpenId === itemId) {
+      setDefectOpenId(null);
+    } else {
+      setDefectOpenId(itemId);
+      setDefectDescription("");
+      setDefectFile(null);
+      setDefectError(null);
+    }
+  }
+
+  async function submitDefect(item: ChecklistItemForForm) {
+    if (!defectDescription.trim()) {
+      setDefectError("Description is required.");
+      return;
+    }
+    setDefectSubmitting(true);
+    setDefectError(null);
+
+    let photoUrl: string | null = null;
+    if (defectFile) {
+      const filePath = `${jobId}/${item.id}-${Date.now()}-${defectFile.name}`;
+      const { error: uploadError } = await supabase.storage
+        .from("defect-photos")
+        .upload(filePath, defectFile);
+
+      if (uploadError) {
+        setDefectSubmitting(false);
+        setDefectError("Photo upload failed. Try again.");
+        return;
+      }
+      const { data: pub } = supabase.storage
+        .from("defect-photos")
+        .getPublicUrl(filePath);
+      photoUrl = pub.publicUrl;
+    }
+
+    const { error: insertError } = await supabase.from("defects").insert({
+      job_card_id: jobId,
+      checklist_item_id: item.id,
+      description: defectDescription.trim(),
+      photo_url: photoUrl,
+    });
+
+    if (insertError) {
+      setDefectSubmitting(false);
+      setDefectError("Couldn't save defect. Try again.");
+      return;
+    }
+
+    await supabase.from("checklist_items").update({ status: "fail" }).eq("id", item.id);
+    setItems((prev) =>
+      prev.map((it) => (it.id === item.id ? { ...it, status: "fail" } : it))
+    );
+
+    setDefectSubmitting(false);
+    setDefectOpenId(null);
+    setDefectDescription("");
+    setDefectFile(null);
+    router.refresh();
   }
 
   return (
@@ -92,11 +164,7 @@ export default function ChecklistForm({
                 ? "See photos below"
                 : item.value_recorded ?? "Not recorded"}
             </p>
-          ) : item.field_type === "photo" ? (
-            <p className="text-sm text-zinc-500 dark:text-zinc-400">
-              Photo capture coming in a later step.
-            </p>
-          ) : item.field_type === "radio" ? (
+          ) : item.field_type === "photo" ? null : item.field_type === "radio" ? (
             <div className="flex flex-wrap gap-2">
               {item.options.map((opt) => (
                 <button
@@ -155,6 +223,53 @@ export default function ChecklistForm({
               rows={2}
               className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-black dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-50"
             />
+          )}
+
+          {!locked && (
+            <div className="mt-1">
+              <button
+                type="button"
+                onClick={() => toggleDefectForm(item.id)}
+                className="flex items-center gap-1 text-xs font-medium text-red-600 hover:underline dark:text-red-400"
+              >
+                <AlertTriangle size={13} />
+                {defectOpenId === item.id ? "Cancel" : "Report defect"}
+              </button>
+
+              {defectOpenId === item.id && (
+                <div className="mt-2 flex flex-col gap-2 rounded-md border border-red-200 bg-red-50 p-3 dark:border-red-900 dark:bg-red-950">
+                  <textarea
+                    value={defectDescription}
+                    onChange={(e) => setDefectDescription(e.target.value)}
+                    placeholder="Describe the issue"
+                    rows={2}
+                    className="rounded-md border border-red-300 bg-white px-2 py-1.5 text-sm text-black dark:border-red-800 dark:bg-zinc-900 dark:text-zinc-50"
+                  />
+                  <label className="flex items-center gap-2 text-xs text-red-700 dark:text-red-300">
+                    <Camera size={14} />
+                    <input
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      onChange={(e) => setDefectFile(e.target.files?.[0] ?? null)}
+                      className="text-xs"
+                    />
+                  </label>
+                  {defectError && (
+                    <p className="text-xs text-red-700 dark:text-red-400">{defectError}</p>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => submitDefect(item)}
+                    disabled={defectSubmitting}
+                    className="flex items-center justify-center gap-2 rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-opacity disabled:opacity-60"
+                  >
+                    {defectSubmitting && <Loader2 size={12} className="animate-spin" />}
+                    Submit Defect
+                  </button>
+                </div>
+              )}
+            </div>
           )}
         </li>
       ))}

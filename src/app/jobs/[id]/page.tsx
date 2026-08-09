@@ -161,6 +161,7 @@ export default async function JobDetailPage({
             </p>
           ) : (
             <ChecklistForm
+              jobId={typedJob.id}
               locked={typedJob.status === "completed"}
               items={sortedItems.map(
                 (item): ChecklistItemForForm => ({
