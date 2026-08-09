@@ -4,6 +4,7 @@ import { ChevronLeft, Camera } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { statusBadgeClass, statusLabel } from "@/lib/status";
 import ChecklistForm, { type ChecklistItemForForm } from "./ChecklistForm";
+import JobActions from "./JobActions";
 
 type JobCardDetail = {
   id: string;
@@ -136,6 +137,8 @@ export default async function JobDetailPage({
             </span>
             <span>End: {formatDateTime(typedJob.end_time) ?? "—"}</span>
           </div>
+
+          <JobActions jobId={typedJob.id} status={typedJob.status} />
         </header>
 
         <section className="flex flex-col gap-3">
