@@ -33,11 +33,14 @@ export default function JobMic({ jobId }: { jobId: string }) {
       const responseText: string = data.answer ?? "";
       setAnswer(responseText);
       speak(responseText);
-      setHistory((prev) =>
-        [...prev, { role: "user", content: text }, { role: "assistant", content: responseText }].slice(
-          -10
-        )
-      );
+      setHistory((prev) => {
+        const next: HistoryMessage[] = [
+          ...prev,
+          { role: "user", content: text },
+          { role: "assistant", content: responseText },
+        ];
+        return next.slice(-10);
+      });
       router.refresh();
     } catch {
       setAskError("Couldn't get an answer. Try again.");
